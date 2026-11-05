@@ -67,10 +67,11 @@ def register(ctx):
         handler=session_status,
     )
 
-    on_session_start, post_tool_call, on_session_end = make_hooks(journal)
+    on_session_start, post_tool_call, on_session_end, on_session_finalize = make_hooks(journal)
     ctx.register_hook("on_session_start", on_session_start)
     ctx.register_hook("post_tool_call", post_tool_call)
     ctx.register_hook("on_session_end", on_session_end)
+    ctx.register_hook("on_session_finalize", on_session_finalize)
 
     ctx.register_command(
         "receipt",
@@ -79,10 +80,15 @@ def register(ctx):
     )
 
     try:
-        skill_text = (
-            Path(__file__).parent / "skills" / "zambo-receipts" / "SKILL.md"
-        ).read_text(encoding="utf-8")
-        ctx.register_skill("zambo-receipts", skill_text)
+        ctx.register_skill(
+            "zambo-receipts",
+            Path(__file__).parent / "skills" / "zambo-receipts" / "SKILL.md",
+            description=(
+                "Work with Zambo verifiable receipts in this session: wrap "
+                "finished work into a checkable receipt, verify receipts the "
+                "user shares, and report the session's journal state."
+            ),
+        )
     except Exception:
         logger.debug("zambo-receipts: skill registration skipped", exc_info=True)
 

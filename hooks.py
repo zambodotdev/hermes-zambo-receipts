@@ -7,7 +7,14 @@ in a durable outbox on disk and is flushed at wrap time or session end.
 
 Privacy: by default only the tool name, duration, result size, and the
 SHA-256 of the result are journaled. Result contents are sent only when the
-user sets journal_results to "full".
+user sets journal_results to "full". Receipt pages are public: anyone with
+the link can open them, and the summary and goal text passed to a wrap is
+published on the receipt page.
+
+Wrapping happens in on_session_finalize (fired on /new, quit, and gateway
+reset), not in on_session_end, which fires at the end of every turn and now
+only flushes the outbox. A session re-wraps only when new calls have
+arrived since its last receipt.
 """
 
 import hashlib
@@ -19,19 +26,38 @@ import uuid
 from pathlib import Path
 
 try:
-    from .client import ZamboClient, ZamboError
+    from .client import ZamboClient, ZamboError, ZamboQuotaError
 except ImportError:  # free-module loading (test harnesses)
-    from client import ZamboClient, ZamboError
+    from client import ZamboClient, ZamboError, ZamboQuotaError
 
 logger = logging.getLogger(__name__)
 
 OWN_TOOLS = ("zambo_verify_receipt", "zambo_wrap_session", "zambo_session_status")
 MAX_RESULT_CHARS = 4000
+# Outbox bounds: a dead network or a spent free tier must not turn the
+# outbox into an unbounded retry queue.
+OUTBOX_MAX_ENTRIES = 500
+OUTBOX_MAX_AGE_S = 7 * 24 * 3600
+
+
+def _next_day_ts(now=None):
+    """Start of the next UTC day: when a daily quota can reset."""
+    now = time.time() if now is None else now
+    return now - (now % 86400) + 86400
+
+
+def _hermes_home():
+    try:
+        from hermes_constants import get_hermes_home
+
+        return Path(get_hermes_home())
+    except Exception:
+        home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        return Path(home)
 
 
 def data_dir():
-    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
-    path = Path(home) / "plugin-data" / "zambo-receipts"
+    path = _hermes_home() / "plugin-data" / "zambo-receipts"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -65,6 +91,7 @@ class SessionRecord:
         self.calls = []          # every observed tool call (local truth)
         self.journaled = 0       # calls confirmed journaled to Zambo
         self.wrapped_receipt = None
+        self.wrapped_call_count = 0  # len(calls) at the last successful wrap
 
     def digest(self):
         canon = json.dumps(
@@ -109,10 +136,26 @@ class Journal:
         return self.sessions[key]
 
     # -- outbox -------------------------------------------------------------
+    @staticmethod
+    def _outbox_prune(entries, now=None):
+        """Drop entries past the age cap; stamp legacy entries that predate
+        ts tracking so they get a full age window from first sight."""
+        now = time.time() if now is None else now
+        kept = []
+        for entry in entries:
+            entry.setdefault("ts", now)
+            if now - entry["ts"] <= OUTBOX_MAX_AGE_S:
+                kept.append(entry)
+        return kept
+
     def _outbox_add(self, entry):
+        entry.setdefault("ts", time.time())
         try:
-            with open(self.outbox_path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry) + "\n")
+            entries = self._outbox_prune(self._outbox_read())
+            entries.append(entry)
+            if len(entries) > OUTBOX_MAX_ENTRIES:
+                entries = entries[-OUTBOX_MAX_ENTRIES:]
+            self._outbox_write_all(entries)
         except Exception:
             logger.debug("zambo-receipts: outbox write failed", exc_info=True)
 
@@ -137,13 +180,24 @@ class Journal:
         return len(self._outbox_read())
 
     def flush_outbox(self, limit=50):
-        """Best-effort: journal buffered entries, keep the ones that fail."""
-        entries = self._outbox_read()
+        """Best-effort: journal buffered entries, keep the ones that fail.
+
+        Entries past the age cap are dropped. An entry Zambo rejected for
+        quota is parked until the next day (retry_after) and skipped, not
+        retried, by later flushes: a spent free tier must not turn every
+        flush into a network call that cannot succeed.
+        """
+        now = time.time()
+        entries = self._outbox_prune(self._outbox_read(), now=now)
         if not entries:
+            self._outbox_write_all(entries)
             return 0
         sent, keep = 0, []
         for entry in entries:
             if sent >= limit:
+                keep.append(entry)
+                continue
+            if entry.get("retry_after", 0) > now:
                 keep.append(entry)
                 continue
             try:
@@ -157,6 +211,9 @@ class Journal:
                 rec = self.sessions.get(entry["session_key"])
                 if rec is not None:
                     rec.journaled += 1
+            except ZamboQuotaError:
+                entry["retry_after"] = _next_day_ts(now)
+                keep.append(entry)
             except ZamboError:
                 keep.append(entry)
         self._outbox_write_all(keep)
@@ -248,11 +305,12 @@ class Journal:
             ),
         )
         rec.wrapped_receipt = receipt_id
+        rec.wrapped_call_count = len(rec.calls)
         return receipt_id
 
 
 def make_hooks(journal):
-    """Build the three lifecycle callbacks bound to one Journal."""
+    """Build the lifecycle callbacks bound to one Journal."""
 
     def _key(kwargs, fallback=None):
         return kwargs.get("session_id") or kwargs.get("task_id") or fallback or "default"
@@ -273,6 +331,16 @@ def make_hooks(journal):
             logger.debug("zambo-receipts: journal hook failed", exc_info=True)
 
     def on_session_end(session_id=None, completed=None, interrupted=None, **kwargs):
+        # Fires at the end of every turn: flush only, never wrap here.
+        try:
+            journal.flush_outbox()
+        except Exception:
+            logger.debug("zambo-receipts: session end flush failed", exc_info=True)
+
+    def on_session_finalize(session_id=None, **kwargs):
+        # Fires once per session boundary (/new, quit, gateway reset):
+        # flush, then wrap, but only when new calls arrived since the
+        # session's last receipt.
         try:
             key = _key(kwargs, session_id)
             journal.flush_outbox()
@@ -280,8 +348,7 @@ def make_hooks(journal):
             if (
                 journal.auto_wrap
                 and rec is not None
-                and rec.calls
-                and not rec.wrapped_receipt
+                and len(rec.calls) > rec.wrapped_call_count
             ):
                 receipt_id = journal.wrap_session(key)
                 logger.info(
@@ -289,6 +356,6 @@ def make_hooks(journal):
                     key, receipt_id,
                 )
         except Exception:
-            logger.warning("zambo-receipts: session end wrap failed", exc_info=True)
+            logger.warning("zambo-receipts: session finalize wrap failed", exc_info=True)
 
-    return on_session_start, post_tool_call, on_session_end
+    return on_session_start, post_tool_call, on_session_end, on_session_finalize

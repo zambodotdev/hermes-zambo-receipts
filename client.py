@@ -18,6 +18,17 @@ class ZamboError(Exception):
     pass
 
 
+class ZamboQuotaError(ZamboError):
+    """Zambo rejected the call because the caller's daily quota is used up.
+
+    Distinct from a transport failure: retrying before the next day cannot
+    succeed, so the outbox parks these entries until then.
+    """
+
+
+_QUOTA_HINTS = ("quota", "daily_free", "daily limit", "daily calls", "rate_limit", "rate limit")
+
+
 class ZamboClient:
     def __init__(self, base_url=DEFAULT_URL, caller="hermes-agent", timeout=8.0):
         self.base_url = base_url
@@ -93,9 +104,13 @@ class ZamboClient:
             structured.get("rejection") or structured.get("executed") is False
         ):
             err = structured.get("error") or {}
-            raise ZamboError(
-                "Zambo rejected the call: " + str(err.get("message") or err or "unknown")
+            message = "Zambo rejected the call: " + str(
+                err.get("message") or err or "unknown"
             )
+            blob = json.dumps(structured, default=str).lower()
+            if any(hint in blob for hint in _QUOTA_HINTS):
+                raise ZamboQuotaError(message)
+            raise ZamboError(message)
         if isinstance(structured, dict):
             return structured
         for item in result.get("content") or []:

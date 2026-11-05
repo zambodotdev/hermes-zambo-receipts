@@ -1,5 +1,5 @@
 name: zambo-receipts
-version: 1.0.1
+version: 1.0.2
 manifest_version: 2
 api_version: 1
 license: MIT
@@ -9,8 +9,11 @@ homepage: https://github.com/zambodotdev/hermes-zambo-receipts
 description: >-
   Verifiable receipts for Hermes Agent. Journals every tool call in a session
   to Zambo as it happens and wraps the finished session into an AER-1 receipt
-  anyone can check at a public link. By default only tool names, durations,
-  and SHA-256 hashes of results are sent, never result contents.
+  anyone can check at a public link. Receipts are public pages: anyone with
+  the link can read them, and the summary and goal text passed to
+  zambo_wrap_session is published on the receipt page. By default only tool
+  names, durations, and SHA-256 hashes of results are sent, never result
+  contents.
 tags: [receipts, verification, audit, provenance, aer-1, zambo]
 provides_tools:
   - zambo_verify_receipt
@@ -20,8 +23,9 @@ provides_hooks:
   - on_session_start
   - post_tool_call
   - on_session_end
+  - on_session_finalize
 config_schema:
   api_url: {type: str, default: "https://zambo.dev/mcp", description: "Zambo MCP endpoint"}
   auto_journal: {type: bool, default: true, description: "Journal each tool call to Zambo as it happens"}
-  auto_wrap: {type: bool, default: true, description: "Wrap the session into a receipt when it ends"}
+  auto_wrap: {type: bool, default: true, description: "Wrap the session into a receipt when it finalizes (/new, quit, gateway reset)"}
   journal_results: {type: str, default: "hash", description: "'hash' sends only SHA-256 + size of each result; 'full' also sends the result text (truncated)"}

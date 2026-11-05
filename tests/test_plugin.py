@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import __init__ as plugin_init
 
 register = plugin_init.register
-from client import ZamboClient, ZamboError
+from client import ZamboClient, ZamboError, ZamboQuotaError
 from hooks import Journal
 
 
@@ -38,8 +38,8 @@ class FakeCtx:
     def register_command(self, name, handler, description=""):
         self.commands[name] = handler
 
-    def register_skill(self, name, text):
-        self.skills[name] = text
+    def register_skill(self, name, path, description=""):
+        self.skills[name] = (path, description)
 
 
 class FakeClient(ZamboClient):
@@ -79,6 +79,10 @@ def test_manifest_matches_registration():
     assert set(manifest["provides_hooks"]) == set(ctx.hooks)
     assert "receipt" in ctx.commands
     assert "zambo-receipts" in ctx.skills
+    skill_path, skill_desc = ctx.skills["zambo-receipts"]
+    assert Path(skill_path).name == "SKILL.md"  # a path, not the file's text
+    assert Path(skill_path).exists()
+    assert skill_desc
 
 
 def test_journal_hook_hashes_and_skips_own_tools():
@@ -86,7 +90,7 @@ def test_journal_hook_hashes_and_skips_own_tools():
     journal = Journal(client)
     from hooks import make_hooks
 
-    start, post, end = make_hooks(journal)
+    start, post, end, finalize = make_hooks(journal)
     start(session_id="s1")
     post(tool_name="terminal", args={}, result="file.txt", task_id="t", duration_ms=12, session_id="s1")
     post(tool_name="zambo_wrap_session", args={}, result="{}", task_id="t", session_id="s1")
@@ -112,21 +116,44 @@ def test_outbox_buffers_on_failure_and_flushes():
     assert journal.sessions["sX"].journaled == 1
 
 
-def test_session_end_auto_wraps():
+def test_finalize_auto_wraps_but_session_end_does_not():
     client = FakeClient()
     journal = Journal(client)
     from hooks import make_hooks
 
-    start, post, end = make_hooks(journal)
+    start, post, end, finalize = make_hooks(journal)
     start(session_id="s9")
     post(tool_name="web_search", args={}, result="hits", task_id="t", session_id="s9")
+    # on_session_end fires every turn: it must never wrap.
     end(session_id="s9", completed=True, interrupted=False)
     rec = journal.sessions["s9"]
+    assert rec.wrapped_receipt is None
+    assert not [c for c in client.calls_made if c[0] == "handover"]
+    # on_session_finalize (the /new, quit, gateway-reset boundary) wraps.
+    finalize(session_id="s9")
     assert rec.wrapped_receipt == "wrap-receipt-123"
+    assert rec.wrapped_call_count == 1
     wrap = [c for c in client.calls_made if c[0] == "handover"]
     assert len(wrap) == 1
     args = wrap[0][1]
     assert args["summary"] and args["goal"] and args["recipient"] and args["next_steps"]
+
+
+def test_finalize_rewraps_only_with_new_calls():
+    client = FakeClient()
+    journal = Journal(client)
+    from hooks import make_hooks
+
+    start, post, end, finalize = make_hooks(journal)
+    start(session_id="s10")
+    post(tool_name="web_search", args={}, result="hits", task_id="t", session_id="s10")
+    finalize(session_id="s10")
+    finalize(session_id="s10")  # no new calls since the receipt: no re-wrap
+    assert len([c for c in client.calls_made if c[0] == "handover"]) == 1
+    post(tool_name="terminal", args={}, result="ok", task_id="t", session_id="s10")
+    finalize(session_id="s10")  # a new call arrived: re-wrap
+    assert len([c for c in client.calls_made if c[0] == "handover"]) == 2
+    assert journal.sessions["s10"].wrapped_call_count == 2
 
 
 def test_wrap_tool_and_verify_tool():
@@ -151,6 +178,81 @@ def test_full_mode_includes_truncated_result():
     journal.record_call("sF", "terminal", "x" * 9000, 1)
     meta = client.calls_made[-1][1]["metadata"]
     assert len(meta["result"]) == 4000
+
+
+class QuotaClient(FakeClient):
+    """Journal calls fail with a quota rejection until `fail` is cleared."""
+
+    def call(self, tool, arguments, session_id, **kw):
+        if self.fail and tool == "journal_log":
+            self.calls_made.append((tool, arguments, session_id))
+            raise ZamboQuotaError("Zambo rejected the call: daily quota reached")
+        return super().call(tool, arguments, session_id, **kw)
+
+
+def test_outbox_quota_entry_parks_until_next_day():
+    import time as _time
+
+    client = QuotaClient(fail=True)
+    journal = Journal(client)
+    journal.record_call("sQ", "read_file", "contents", 5)
+    assert journal.outbox_size() == 1
+    attempts_before = len(client.calls_made)
+    assert journal.flush_outbox() == 0
+    # The flush retried once, learned it was quota, and stamped retry_after.
+    assert len(client.calls_made) == attempts_before + 1
+    entry = journal._outbox_read()[0]
+    assert entry["retry_after"] > _time.time()
+    # Later flushes skip the parked entry without any network call.
+    assert journal.flush_outbox() == 0
+    assert len(client.calls_made) == attempts_before + 1
+    assert journal.outbox_size() == 1
+
+
+def test_outbox_size_and_age_caps():
+    import time as _time
+
+    import hooks as hooks_mod
+
+    client = FakeClient(fail=True)
+    journal = Journal(client)
+    old = {
+        "session_key": "sOld", "zambo_session": "hermes-sOld", "job_id": "j",
+        "tool": "read_file", "metadata": {},
+        "ts": _time.time() - hooks_mod.OUTBOX_MAX_AGE_S - 60,
+    }
+    journal._outbox_add(old)
+    journal.record_call("sA", "read_file", "contents", 5)
+    entries = journal._outbox_read()
+    assert [e["session_key"] for e in entries] == ["sA"]  # aged entry pruned
+    assert entries[0]["ts"] <= _time.time()
+
+    journal2 = Journal(client)
+    for i in range(hooks_mod.OUTBOX_MAX_ENTRIES + 5):
+        journal2._outbox_add(
+            {"session_key": f"s{i}", "zambo_session": "z", "job_id": "j",
+             "tool": "t", "metadata": {}}
+        )
+    assert journal2.outbox_size() == hooks_mod.OUTBOX_MAX_ENTRIES
+    assert journal2._outbox_read()[0]["session_key"] == "s5"  # oldest dropped
+
+
+def test_quota_rejection_maps_to_quota_error():
+    class QuotaRejectingClient(ZamboClient):
+        def _post(self, payload, timeout=None):
+            return {
+                "result": {
+                    "structuredContent": {
+                        "rejection": True,
+                        "executed": False,
+                        "error": {"message": "daily_free_wrap_up: daily quota reached"},
+                    }
+                }
+            }
+
+    c = QuotaRejectingClient(caller="hermes-test")
+    with pytest.raises(ZamboQuotaError):
+        c.journal(session_id="s", job_id="j", tool_name="terminal", metadata={})
 
 
 def test_rejection_is_an_error_not_a_success():
