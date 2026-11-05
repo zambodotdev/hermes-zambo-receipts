@@ -1,0 +1,102 @@
+# Zambo Receipts for Hermes Agent
+
+**Every Hermes session ends with a receipt anyone can check.**
+
+Zambo Receipts is a Hermes Agent plugin that journals each tool call in a
+session to [Zambo](https://zambo.dev) as it happens, and wraps the finished
+session into a verifiable [AER-1](https://zambo.dev/aer1) receipt: a public
+record at `zambo.dev/run/<id>` that commits to what the agent did, step by
+step, with a hash of every result. When someone asks "what did your agent
+actually do?", the answer stops being the agent's word and becomes a link
+they can open and check themselves.
+
+## What it adds
+
+- **Automatic journaling** (`post_tool_call` hook): every tool call in the
+  session is recorded: tool name, duration, result size, and the SHA-256 of
+  the result. Calls are journaled to Zambo live; if the network is down or
+  the free daily tier runs out, they wait in a durable local outbox and
+  flush automatically.
+- **Automatic wrap** (`on_session_end` hook): when a session ends, the
+  journaled job is wrapped into one AER-1 receipt. The wrap also binds the
+  SHA-256 digest of the full local call log, so calls Zambo never saw are
+  still committed to by the receipt.
+- **`zambo_wrap_session`** tool: wrap the current session on demand, with
+  your own summary and goal.
+- **`zambo_verify_receipt`** tool: check any receipt id against its public
+  verify endpoint and record.
+- **`zambo_session_status`** tool: journaled count, outbox backlog, and the
+  session's receipt link.
+- **`/receipt` command**: `/receipt <id>` checks a receipt; bare `/receipt`
+  shows the latest wrapped session's link.
+- A bundled **skill** that teaches the agent when to wrap and how to explain
+  what a receipt does and does not prove.
+
+A receipt proves the saved work record was not changed after the fact. It
+does not prove the work was done well. The plugin says so everywhere it
+surfaces one.
+
+## Privacy and disclosure (read before installing)
+
+- The plugin makes **network calls to `zambo.dev`** (the MCP endpoint at
+  `https://zambo.dev/mcp` and the public receipt pages). That is its whole
+  job; there is no other network traffic, no telemetry, and no analytics.
+- **By default it sends metadata only**: tool names, durations, result
+  sizes, and SHA-256 hashes of results. Result contents are never sent
+  unless you set `journal_results: "full"` (results are then truncated to
+  4,000 characters each).
+- Each install generates one random caller id (`hermes-<10 hex>`) stored in
+  the plugin's data directory, so your Zambo free tier is yours alone. No
+  account, no API key, no credentials of any kind are used or stored.
+- Local state (session records, the offline outbox, the caller id) lives
+  under `$HERMES_HOME/plugin-data/zambo-receipts/`.
+- Zambo's free tier is 20 calls plus 1 wrap-up per caller per day; pickup
+  and receipt checks are free. A long session can outrun the free journal
+  quota: extra calls stay in the local outbox, still hash-committed by the
+  wrap, and flush the next day. A Zambo Day Pass or Pass raises the limit.
+- The plugin never overrides a Hermes tool, never patches core, spawns no
+  processes, and does nothing at all when Zambo is unreachable except
+  buffer locally. Every hook and handler fails quietly by design.
+
+## Install
+
+From the Hermes plugin catalog (once listed):
+
+```
+hermes plugins install zambo-receipts
+```
+
+From this repo:
+
+```
+hermes plugins install zambodotdev/hermes-zambo-receipts --enable
+```
+
+Or copy this directory into `~/.hermes/plugins/zambo-receipts/` and run
+`hermes plugins enable zambo-receipts`.
+
+## Settings
+
+Under `plugins.entries.zambo-receipts.settings`:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `api_url` | `https://zambo.dev/mcp` | Zambo MCP endpoint |
+| `auto_journal` | `true` | Journal each tool call as it happens |
+| `auto_wrap` | `true` | Wrap the session into a receipt when it ends |
+| `journal_results` | `hash` | `hash`: hashes + sizes only. `full`: also send result text (truncated) |
+
+## Development
+
+```
+python3 -m pytest tests/ -q     # unit tests (fake Zambo transport)
+hermes plugins doctor . --ci    # Hermes' own registration check
+hermes plugins validate . --install-deps   # the catalog admission check
+```
+
+The live smoke test in `tests/live_smoke.py` drives the real hooks against
+the production Zambo endpoint and prints the resulting receipt link.
+
+## License
+
+MIT. Built by Brennan Zambo (zambo.dev).
