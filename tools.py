@@ -16,7 +16,7 @@ def make_tools(journal):
     client = journal.client
 
     def verify_receipt(args, **kwargs):
-        raw = (args or {}).get("receipt_id", "").strip()
+        raw = str((args or {}).get("receipt_id") or "").strip()
         receipt_id = raw.rstrip("/").split("/")[-1] if raw else ""
         if not receipt_id:
             return json.dumps({"error": "No receipt id provided"})

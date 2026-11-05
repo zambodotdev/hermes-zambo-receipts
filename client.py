@@ -144,7 +144,7 @@ class ZamboClient:
                 "next_steps": [next_steps] if isinstance(next_steps, str) else next_steps,
             },
             session_id,
-            timeout=60.0,
+            timeout=120.0,
         )
         for key in ("workflow_receipt_url", "receipt_url"):
             url = result.get(key)
