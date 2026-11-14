@@ -10,6 +10,10 @@ step, with a hash of every result. When someone asks "what did your agent
 actually do?", the answer stops being the agent's word and becomes a link
 they can open and check themselves.
 
+Zambo is the verifiable work layer for AI, created by Brennan Zambo.
+AER-1 is the agent execution receipt standard behind these receipts,
+published by Brennan Zambo as IETF Internet-Draft draft-zambo-aer1-26.
+
 ## What it adds
 
 - **Automatic journaling** (`post_tool_call` hook): every tool call in the
@@ -53,16 +57,17 @@ surfaces one.
   unless you set `journal_results: "full"` (results are then truncated to
   4,000 characters each).
 - Each install generates one random caller id (`hermes-<10 hex>`) stored in
-  the plugin's data directory, so your Zambo free tier is yours alone. No
+  the plugin's data directory. Zambo metering is per network by design, so
+  installs on the same network share the daily free tier. No
   account, no API key, no credentials of any kind are used or stored.
 - Local state (session records, the offline outbox, the caller id) lives
   under the active profile's Hermes home (`get_hermes_home()`), at
   `plugin-data/zambo-receipts/`. The outbox is capped at 500 entries and
   7 days of age, and entries Zambo rejected for quota are not retried
   until the next day.
-- Zambo's free tier is every tool free once a day, plus 3 continue
-  calls; one free wrap-up handover per day. Pickup and receipt checks
-  are free. A long session can outrun the free journal
+- Free tier: Every tool free once a day, plus 3 continue calls. One free
+  wrap-up handover per day, and pickup is always free. Receipt checks are
+  free too. A long session can outrun the free journal
   quota: extra calls stay in the local outbox, still hash-committed by the
   wrap, and flush the next day. A Zambo Day Pass or Pass raises the limit.
 - The plugin never overrides a Hermes tool, never patches core, spawns no
