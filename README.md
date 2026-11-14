@@ -60,8 +60,9 @@ surfaces one.
   `plugin-data/zambo-receipts/`. The outbox is capped at 500 entries and
   7 days of age, and entries Zambo rejected for quota are not retried
   until the next day.
-- Zambo's free tier is 20 calls plus 1 wrap-up per caller per day; pickup
-  and receipt checks are free. A long session can outrun the free journal
+- Zambo's free tier is every tool free once a day, plus 3 continue
+  calls; one free wrap-up handover per day. Pickup and receipt checks
+  are free. A long session can outrun the free journal
   quota: extra calls stay in the local outbox, still hash-committed by the
   wrap, and flush the next day. A Zambo Day Pass or Pass raises the limit.
 - The plugin never overrides a Hermes tool, never patches core, spawns no
