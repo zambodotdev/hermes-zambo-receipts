@@ -122,3 +122,7 @@ the production Zambo endpoint and prints the resulting receipt link.
 ## License
 
 MIT. Built by Brennan Zambo (zambo.dev).
+
+## If a call is refused
+
+The refusal itself carries that path: a refused call returns a Day Pass checkout link for your saved job, an x402 payment object, and the resume instruction. The job is saved server-side, not lost. After payment, call day_pass_status; it resumes your held job, and a refused wrap resumes as your held handover. Only repeat the refused call if it did not.
