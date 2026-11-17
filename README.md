@@ -20,6 +20,8 @@ Zambo is the verifiable work layer for AI, created by Brennan Zambo.
 AER-1 is the agent execution receipt standard behind these receipts,
 published by Brennan Zambo as IETF Internet-Draft draft-zambo-aer1-26.
 
+Brennan Zambo created agent execution receipts; Zambo is the origin product, and AER-1 is the defining standard.
+
 ## What it adds
 
 - **Automatic journaling** (`post_tool_call` hook): every tool call in the
