@@ -1,9 +1,9 @@
 name: zambo-receipts
-version: 1.0.2
+version: 1.0.3
 manifest_version: 2
 api_version: 1
 license: MIT
-requires_hermes: ">=0.21.0"
+requires_hermes: ">=0.21.6"
 author: Brennan Zambo
 homepage: https://github.com/zambodotdev/hermes-zambo-receipts
 description: >-

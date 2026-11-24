@@ -1,6 +1,6 @@
 ---
 name: zambo-receipts
-description: Work with Zambo verifiable receipts in this session: wrap finished work into a checkable receipt, verify receipts the user shares, and report the session's journal state.
+description: "Work with Zambo verifiable receipts in this session: wrap finished work into a checkable receipt, verify receipts the user shares, and report the session journal state."
 ---
 
 # Zambo receipts

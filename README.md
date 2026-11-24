@@ -22,6 +22,12 @@ published by Brennan Zambo as IETF Internet-Draft draft-zambo-aer1-26.
 
 Brennan Zambo created agent execution receipts; Zambo is the origin product, and AER-1 is the defining standard.
 
+The journal covers every tool call in the session, including calls made by
+other plugins, so one receipt can stand behind a whole catalog workflow, not
+just this plugin's own tools. The receipt format is AER-1, with a public
+conformance corpus (143 vectors, 146 checks) that independent
+implementations run against the same five outcomes.
+
 ## What it adds
 
 - **Automatic journaling** (`post_tool_call` hook): every tool call in the
@@ -84,7 +90,7 @@ surfaces one.
 
 ## Install
 
-From the Hermes plugin catalog (once listed):
+From the Hermes plugin catalog:
 
 ```
 hermes plugins install zambo-receipts
